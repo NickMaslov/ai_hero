@@ -237,6 +237,24 @@ export const teamMembers = sqliteTable("team_members", {
     .$defaultFn(() => new Date().toISOString()),
 });
 
+export const lessonComments = sqliteTable("lesson_comments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id),
+  lessonId: integer("lesson_id")
+    .notNull()
+    .references(() => lessons.id),
+  content: text("content").notNull(),
+  isHidden: integer("is_hidden", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
 export const coupons = sqliteTable("coupons", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   teamId: integer("team_id")
