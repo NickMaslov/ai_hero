@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams, useFetcher } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/courses.$slug";
 import {
@@ -33,6 +33,7 @@ import {
   Clock,
   Pencil,
   PlayCircle,
+  Star,
   Users,
 } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
@@ -42,6 +43,9 @@ import { formatDuration, formatPrice } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice, getCountryTierInfo } from "~/lib/ppp";
+import { getCourseRatingStats, findRating, upsertRating } from "~/services/ratingService";
+import { z } from "zod";
+import { parseFormData, parseParams } from "~/lib/validation";
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course";
@@ -102,6 +106,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     : courseWithDetails.price;
   const tierInfo = getCountryTierInfo(country);
 
+  const ratingStats = getCourseRatingStats(course.id);
+  const userRating = currentUserId ? findRating(currentUserId, course.id) : null;
+
   return {
     course: courseWithDetails,
     salesCopyHtml,
@@ -113,10 +120,42 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingStats,
+    userRating: userRating?.rating ?? null,
   };
 }
 
-// No action — enrollment is handled via the purchase confirmation page
+const ratingSchema = z.object({
+  intent: z.literal("rate-course"),
+  rating: z.coerce.number().int().min(1).max(5),
+});
+
+export async function action({ params, request }: Route.ActionArgs) {
+  const { slug } = parseParams(params, z.object({ slug: z.string() }));
+
+  const currentUserId = await getCurrentUserId(request);
+  if (!currentUserId) {
+    return data({ error: "You must be logged in to rate a course." }, { status: 401 });
+  }
+
+  const course = getCourseBySlug(slug);
+  if (!course) {
+    return data({ error: "Course not found." }, { status: 404 });
+  }
+
+  if (!isUserEnrolled(currentUserId, course.id)) {
+    return data({ error: "You must be enrolled to rate this course." }, { status: 403 });
+  }
+
+  const formData = await request.formData();
+  const parsed = parseFormData(formData, ratingSchema);
+  if (!parsed.success) {
+    return data({ error: "Invalid rating." }, { status: 400 });
+  }
+
+  upsertRating(currentUserId, course.id, parsed.data.rating);
+  return { success: true };
+}
 
 export function HydrateFallback() {
   return (
@@ -181,6 +220,8 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingStats,
+    userRating,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -320,6 +361,13 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               {formatDuration(totalDuration, true, false, false)} total
             </span>
           )}
+          {ratingStats.count > 0 && (
+            <span className="flex items-center gap-1">
+              <Star className="size-4 fill-yellow-400 text-yellow-400" />
+              {ratingStats.average?.toFixed(1)}
+              <span className="text-muted-foreground">({ratingStats.count} {ratingStats.count === 1 ? "rating" : "ratings"})</span>
+            </span>
+          )}
         </div>
       </div>
 
@@ -442,9 +490,78 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
                   </p>
                 )}
               </div>
+              {enrolled && !isInstructor && (
+                <div className="border-t pt-4">
+                  <StarRatingWidget
+                    courseSlug={course.slug}
+                    currentRating={userRating}
+                  />
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function StarRatingWidget({
+  courseSlug,
+  currentRating,
+}: {
+  courseSlug: string;
+  currentRating: number | null;
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const [hovered, setHovered] = useState<number | null>(null);
+  const isSubmitting = fetcher.state !== "idle";
+
+  const submitted = fetcher.state === "idle" && fetcher.data && "success" in fetcher.data && fetcher.data.success;
+  const optimisticRating =
+    fetcher.state !== "idle" && fetcher.formData
+      ? Number(fetcher.formData.get("rating"))
+      : null;
+  const displayRating = optimisticRating ?? currentRating;
+
+  useEffect(() => {
+    if (submitted) {
+      toast.success("Rating saved!");
+    }
+  }, [submitted]);
+
+  return (
+    <div>
+      <p className="mb-2 text-xs font-medium text-muted-foreground">Your rating</p>
+      <div className="flex gap-1" onMouseLeave={() => setHovered(null)}>
+        {[1, 2, 3, 4, 5].map((star) => {
+          const filled = hovered !== null ? star <= hovered : star <= (displayRating ?? 0);
+          return (
+            <fetcher.Form
+              key={star}
+              method="post"
+              action={`/courses/${courseSlug}`}
+            >
+              <input type="hidden" name="intent" value="rate-course" />
+              <input type="hidden" name="rating" value={star} />
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                onMouseEnter={() => setHovered(star)}
+                className="p-0.5 transition-transform hover:scale-110 disabled:cursor-not-allowed"
+                aria-label={`Rate ${star} star${star !== 1 ? "s" : ""}`}
+              >
+                <Star
+                  className={`size-5 ${
+                    filled
+                      ? "fill-yellow-400 text-yellow-400"
+                      : "fill-none text-muted-foreground"
+                  }`}
+                />
+              </button>
+            </fetcher.Form>
+          );
+        })}
       </div>
     </div>
   );

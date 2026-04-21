@@ -6,7 +6,7 @@ import { CourseStatus } from "~/db/schema";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, Search } from "lucide-react";
+import { AlertTriangle, BookOpen, Search, Star } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 import { UserAvatar } from "~/components/user-avatar";
 import { getCurrentUserId } from "~/lib/session";
@@ -15,6 +15,7 @@ import { getUserEnrolledCourses } from "~/services/enrollmentService";
 import { calculateProgress, getCompletedLessonCount } from "~/services/progressService";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice } from "~/lib/ppp";
+import { getRatingStatsForCourses } from "~/services/ratingService";
 
 export function meta() {
   return [
@@ -55,17 +56,23 @@ export async function loader({ request }: Route.LoaderArgs) {
     }
   }
 
+  const courseIds = courses.map((c) => c.id);
+  const ratingStatsMap = getRatingStatsForCourses(courseIds);
+
   const coursesWithLessonCount = courses.map((course) => {
     const userProgress = progressMap.get(course.id);
     const pppPrice = course.pppEnabled
       ? calculatePppPrice(course.price, country)
       : course.price;
+    const ratingStats = ratingStatsMap.get(course.id) ?? { average: null, count: 0 };
     return {
       ...course,
       lessonCount: getLessonCountForCourse(course.id),
       progress: userProgress?.progress ?? null,
       completedLessons: userProgress?.completedLessons ?? null,
       pppPrice,
+      averageRating: ratingStats.average,
+      ratingCount: ratingStats.count,
     };
   });
 
@@ -235,17 +242,26 @@ export default function CourseCatalog({ loaderData }: Route.ComponentProps) {
                     />
                     {course.instructorName}
                   </span>
-                  <span className="font-semibold text-foreground">
-                    {course.pppPrice < course.price ? (
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-xs line-through text-muted-foreground font-normal">
-                          {formatPrice(course.price)}
-                        </span>
-                        {formatPrice(course.pppPrice)}
+                  <span className="flex items-center gap-2">
+                    {course.ratingCount > 0 && (
+                      <span className="flex items-center gap-1">
+                        <Star className="size-3.5 fill-yellow-400 text-yellow-400" />
+                        <span>{course.averageRating?.toFixed(1)}</span>
+                        <span className="text-muted-foreground">({course.ratingCount})</span>
                       </span>
-                    ) : (
-                      formatPrice(course.price)
                     )}
+                    <span className="font-semibold text-foreground">
+                      {course.pppPrice < course.price ? (
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-xs line-through text-muted-foreground font-normal">
+                            {formatPrice(course.price)}
+                          </span>
+                          {formatPrice(course.pppPrice)}
+                        </span>
+                      ) : (
+                        formatPrice(course.price)
+                      )}
+                    </span>
                   </span>
                 </CardFooter>
               </Card>
